@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./interface/IPQCAuthorizer.sol";
+import "./interface/IFalconUnlock.sol";
 import "./FalconVerifier.sol";
 
 /**
@@ -24,7 +25,7 @@ import "./FalconVerifier.sol";
  * `cHash` is separate from the tx hash (future ZKP binding); each `cHash`
  * and each `userNonce` may only be consumed once.
  */
-contract FalconAuthorizer is IPQCAuthorizer {
+contract FalconAuthorizer is IPQCAuthorizer, IFalconUnlock {
 
     /// @dev Domain tag for `computeTxHash`; must match prover / off-chain tooling.
     string public constant TX_HASH_DOMAIN = "QLABS_ZKP_FALCON_V1";
@@ -92,23 +93,15 @@ contract FalconAuthorizer is IPQCAuthorizer {
         emit AuthorizationChanged(account, false);
     }
 
-    /**
-     * @notice Verify a Falcon-ZKP Groth16 proof and unlock `account`.
-     * @param account  The locked address to unlock.
-     * @param pA       Groth16 proof element A.
-     * @param pB       Groth16 proof element B.
-     * @param pC         Groth16 proof element C.
-     * @param userNonce  Binds the tx hash via `computeTxHash(userNonce)` (public inputs lo/hi).
-     * @param cHash      Separate challenge id; must be unique per use (future ZKP binding).
-     */
+    /// @inheritdoc IFalconUnlock
     function unlock(
         address account,
-        uint[2] calldata pA,
-        uint[2][2] calldata pB,
+        uint256[2] calldata pA,
+        uint256[2][2] calldata pB,
         uint[2] calldata pC,
         uint256 userNonce,
         uint256 cHash
-    ) external {
+    ) external override {
         uint256 pkHash = pkHashes[account];
         if (pkHash == 0) revert NotLocked(account);
         if (usedUserNonces[userNonce]) revert UserNonceAlreadyUsed(userNonce);
@@ -139,7 +132,7 @@ contract FalconAuthorizer is IPQCAuthorizer {
 
     /// @inheritdoc IPQCAuthorizer
     function authorizeUpgrade(
-        address,
+        address sender,
         address tokenContract,
         address currentAuthorizer,
         address newAuthorizer,
@@ -166,7 +159,7 @@ contract FalconAuthorizer is IPQCAuthorizer {
             revert InvalidProof();
         }
 
-        emit UpgradeAuthorized(tokenContract, currentAuthorizer, newAuthorizer);
+        //emit UpgradeAuthorized(tokenContract, currentAuthorizer, newAuthorizer);
         return true;
     }
 
