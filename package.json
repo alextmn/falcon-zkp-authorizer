@@ -1,0 +1,25 @@
+{
+  "name": "falcon-zkp-authorizer",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "clean": "hardhat clean"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-node-test-runner": "^3.0.12",
+    "@nomicfoundation/hardhat-toolbox": "^7.0.0",
+    "@nomicfoundation/hardhat-viem": "^3.0.4",
+    "@types/node": "^25.5.0",
+    "hardhat": "^3.2.0",
+    "typescript": "^6.0.2",
+    "viem": "^2.47.6"
+  }
+}
