@@ -150,7 +150,7 @@ contract FalconAuthorizer is IPQCAuthorizer {
             uint[2][2] memory pB,
             uint[2] memory pC,
             uint[3] memory upgradeHashes
-        ) = abi.decode(proof, (uint[2], uint[2][2], uint[2], uint[2]));
+        ) = abi.decode(proof, (uint[2], uint[2][2], uint[2], uint[3]));
 
         uint256 pkHash = upgradeHashes[0];
         uint256 userNonce = upgradeHashes[1];
