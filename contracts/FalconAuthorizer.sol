@@ -2,7 +2,6 @@
 pragma solidity ^0.8.20;
 
 import "./interface/IPQCAuthorizer.sol";
-import "./interface/IFalconUnlock.sol";
 import "./FalconVerifier.sol";
 
 /**
@@ -25,8 +24,7 @@ import "./FalconVerifier.sol";
  * `cHash` is separate from the tx hash (future ZKP binding); each `cHash`
  * and each `userNonce` may only be consumed once.
  */
-contract FalconAuthorizer is IPQCAuthorizer, IFalconUnlock {
-
+contract FalconAuthorizer is IPQCAuthorizer {
     /// @dev Domain tag for `computeTxHash`; must match prover / off-chain tooling.
     string public constant TX_HASH_DOMAIN = "QLABS_ZKP_FALCON_V1";
 
@@ -36,8 +34,8 @@ contract FalconAuthorizer is IPQCAuthorizer, IFalconUnlock {
     uint256[3] public upgradeGuardians;
 
     mapping(address => uint256) public pkHashes;
-    mapping(uint256 => bool)    public usedUserNonces;
-    mapping(uint256 => bool)    public usedCHashes;
+    mapping(uint256 => uint256) public nonces;
+    mapping(uint256 => bool) public usedCHashes;
 
     error Unauthorized();
     error NotLocked(address account);
@@ -46,7 +44,6 @@ contract FalconAuthorizer is IPQCAuthorizer, IFalconUnlock {
     error ZeroPkHash();
     error NotAGuardian(uint256 pkHash);
     error CHashAlreadyUsed(uint256 cHash);
-    error UserNonceAlreadyUsed(uint256 userNonce);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -72,11 +69,17 @@ contract FalconAuthorizer is IPQCAuthorizer, IFalconUnlock {
      *      `cHash` is not part of this preimage; it is passed separately to `unlock`.
      */
     function computeTxHash(uint256 userNonce) public view returns (uint256) {
-        return uint256(
-            keccak256(
-                abi.encodePacked(TX_HASH_DOMAIN, block.chainid, address(this), userNonce)
-            )
-        );
+        return
+            uint256(
+                keccak256(
+                    abi.encodePacked(
+                        TX_HASH_DOMAIN,
+                        block.chainid,
+                        address(this),
+                        userNonce
+                    )
+                )
+            );
     }
 
     // ─── Lock / Unlock ───────────────────────────────────────────────
@@ -93,30 +96,26 @@ contract FalconAuthorizer is IPQCAuthorizer, IFalconUnlock {
         emit AuthorizationChanged(account, false);
     }
 
-    /// @inheritdoc IFalconUnlock
     function unlock(
         address account,
         uint256[2] calldata pA,
         uint256[2][2] calldata pB,
         uint[2] calldata pC,
-        uint256 userNonce,
         uint256 cHash
-    ) external override {
+    ) external {
         uint256 pkHash = pkHashes[account];
         if (pkHash == 0) revert NotLocked(account);
-        if (usedUserNonces[userNonce]) revert UserNonceAlreadyUsed(userNonce);
+        uint256 userNonce = nonces[pkHash]++;
         if (usedCHashes[cHash]) revert CHashAlreadyUsed(cHash);
 
         uint256 txHash = computeTxHash(userNonce);
         (uint256 lo, uint256 hi) = _splitHash(txHash);
         uint[3] memory pubSignals = [pkHash, hi, lo];
 
-
         if (!verifier.verifyProof(pA, pB, pC, pubSignals)) {
             revert InvalidProof();
         }
 
-        usedUserNonces[userNonce] = true;
         usedCHashes[cHash] = true;
         pkHashes[account] = 0;
 
@@ -126,7 +125,9 @@ contract FalconAuthorizer is IPQCAuthorizer, IFalconUnlock {
     // ─── IPQCAuthorizer ──────────────────────────────────────────────
 
     /// @inheritdoc IPQCAuthorizer
-    function isAuthorized(address account) external view override returns (bool) {
+    function isAuthorized(
+        address account
+    ) external view override returns (bool) {
         return pkHashes[account] == 0;
     }
 
@@ -142,15 +143,15 @@ contract FalconAuthorizer is IPQCAuthorizer, IFalconUnlock {
             uint[2] memory pA,
             uint[2][2] memory pB,
             uint[2] memory pC,
-            uint[3] memory upgradeHashes
-        ) = abi.decode(proof, (uint[2], uint[2][2], uint[2], uint[3]));
+            uint[2] memory upgradeHashes
+        ) = abi.decode(proof, (uint[2], uint[2][2], uint[2], uint[2]));
 
         uint256 pkHash = upgradeHashes[0];
-        uint256 userNonce = upgradeHashes[1];
-        uint256 cHash = upgradeHashes[2];
+        uint256 cHash = upgradeHashes[1];
         if (!_isGuardian(pkHash)) revert NotAGuardian(pkHash);
         if (usedCHashes[cHash]) revert CHashAlreadyUsed(cHash);
-        if (usedUserNonces[userNonce]) revert UserNonceAlreadyUsed(userNonce);
+
+        uint256 userNonce = nonces[pkHash]++;
         uint256 txHash = computeTxHash(userNonce);
         (uint256 lo, uint256 hi) = _splitHash(txHash);
 
@@ -172,7 +173,9 @@ contract FalconAuthorizer is IPQCAuthorizer, IFalconUnlock {
         return false;
     }
 
-    function _splitHash(uint256 h) private pure returns (uint256 lo, uint256 hi) {
+    function _splitHash(
+        uint256 h
+    ) private pure returns (uint256 lo, uint256 hi) {
         lo = h & type(uint128).max;
         hi = h >> 128;
     }
