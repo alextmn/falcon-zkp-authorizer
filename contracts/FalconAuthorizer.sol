@@ -116,7 +116,8 @@ contract FalconAuthorizer is IPQCAuthorizer {
 
         uint256 txHash = computeTxHash(userNonce);
         (uint256 lo, uint256 hi) = _splitHash(txHash);
-        uint[3] memory pubSignals = [pkHash, lo, hi];
+        uint[3] memory pubSignals = [pkHash, hi, lo];
+
 
         if (!verifier.verifyProof(pA, pB, pC, pubSignals)) {
             revert InvalidProof();
@@ -148,13 +149,20 @@ contract FalconAuthorizer is IPQCAuthorizer {
             uint[2] memory pA,
             uint[2][2] memory pB,
             uint[2] memory pC,
-            uint[3] memory pubSignals
-        ) = abi.decode(proof, (uint[2], uint[2][2], uint[2], uint[3]));
+            uint[3] memory upgradeHashes
+        ) = abi.decode(proof, (uint[2], uint[2][2], uint[2], uint[2]));
 
-        uint256 pkHash = pubSignals[0];
+        uint256 pkHash = upgradeHashes[0];
+        uint256 userNonce = upgradeHashes[1];
+        uint256 cHash = upgradeHashes[2];
         if (!_isGuardian(pkHash)) revert NotAGuardian(pkHash);
+        if (usedCHashes[cHash]) revert CHashAlreadyUsed(cHash);
+        if (usedUserNonces[userNonce]) revert UserNonceAlreadyUsed(userNonce);
+        uint256 txHash = computeTxHash(userNonce);
+        (uint256 lo, uint256 hi) = _splitHash(txHash);
 
-        if (!verifier.verifyProof(pA, pB, pC, pubSignals)) {
+        // todo: add cHash to the public signals
+        if (!verifier.verifyProof(pA, pB, pC, [pkHash, hi, lo])) {
             revert InvalidProof();
         }
 
