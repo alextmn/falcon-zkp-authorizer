@@ -12,19 +12,22 @@ import "./FalconVerifier.sol";
  * ---------
  * 1. Owner calls `lock(account, pkHash)` to bind an address to a Falcon
  *    public-key hash.  While locked, `isAuthorized(account)` returns false.
- * 2. Anyone holding the Falcon private key produces a ZKP and calls
- *    `unlock(account, pA, pB, pC, txHash1, txHash2)`.  The contract
- *    reconstructs the public signals `[pkHash, txHash1, txHash2]` from
- *    storage and verifies the Groth16 proof.  On success the lock is
- *    removed and `isAuthorized(account)` returns true.
+ * 2. Prover picks `userNonce` and a separate `cHash`, builds the ZKP with
+ *    public inputs `[pkHash, lo, hi]` where `computeTxHash(userNonce)` splits
+ *    into low/high 128-bit halves, then calls `unlock(..., userNonce, cHash)`.
  *
  * Circuit public signals (3):
- *   [0] pk_hash_in   – Poseidon hash of the Falcon public key
- *   [1] in_tx_hash1  – first  128 bits of the transaction hash
- *   [2] in_tx_hash2  – last   128 bits of the transaction hash
- *   [3] c_hash       – 256-bit falcon'schallenge hash
+ *   [0] pk_hash_in   – hash of the Falcon public key
+ *   [1] in_tx_hash1  – low  128 bits of `computeTxHash(userNonce)`
+ *   [2] in_tx_hash2  – high 128 bits of `computeTxHash(userNonce)`
+ *
+ * `cHash` is separate from the tx hash (future ZKP binding); each `cHash`
+ * and each `userNonce` may only be consumed once.
  */
 contract FalconAuthorizer is IPQCAuthorizer {
+
+    /// @dev Domain tag for `computeTxHash`; must match prover / off-chain tooling.
+    string public constant TX_HASH_DOMAIN = "QLABS_ZKP_FALCON_V1";
 
     address public owner;
     Groth16Verifier public immutable verifier;
@@ -32,6 +35,7 @@ contract FalconAuthorizer is IPQCAuthorizer {
     uint256[3] public upgradeGuardians;
 
     mapping(address => uint256) public pkHashes;
+    mapping(uint256 => bool)    public usedUserNonces;
     mapping(uint256 => bool)    public usedCHashes;
 
     error Unauthorized();
@@ -41,6 +45,7 @@ contract FalconAuthorizer is IPQCAuthorizer {
     error ZeroPkHash();
     error NotAGuardian(uint256 pkHash);
     error CHashAlreadyUsed(uint256 cHash);
+    error UserNonceAlreadyUsed(uint256 userNonce);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -56,6 +61,21 @@ contract FalconAuthorizer is IPQCAuthorizer {
         owner = msg.sender;
         verifier = Groth16Verifier(_verifier);
         upgradeGuardians = _guardians;
+    }
+
+    // ─── Tx hash (challenge binding) ─────────────────────────────────
+
+    /**
+     * @notice 256-bit tx hash from `userNonce` (split into two 128-bit circuit public inputs).
+     * @dev Preimage: `TX_HASH_DOMAIN` (UTF-8) || chainId (uint256) || this (address) || userNonce (uint256).
+     *      `cHash` is not part of this preimage; it is passed separately to `unlock`.
+     */
+    function computeTxHash(uint256 userNonce) public view returns (uint256) {
+        return uint256(
+            keccak256(
+                abi.encodePacked(TX_HASH_DOMAIN, block.chainid, address(this), userNonce)
+            )
+        );
     }
 
     // ─── Lock / Unlock ───────────────────────────────────────────────
@@ -77,29 +97,32 @@ contract FalconAuthorizer is IPQCAuthorizer {
      * @param account  The locked address to unlock.
      * @param pA       Groth16 proof element A.
      * @param pB       Groth16 proof element B.
-     * @param pC       Groth16 proof element C.
-     * @param cHash    Unique 256-bit challenge hash; split into low/high
-     *                 128-bit halves for the circuit's public signals.
-     *                 Each cHash may only be used once (replay protection).
+     * @param pC         Groth16 proof element C.
+     * @param userNonce  Binds the tx hash via `computeTxHash(userNonce)` (public inputs lo/hi).
+     * @param cHash      Separate challenge id; must be unique per use (future ZKP binding).
      */
     function unlock(
         address account,
         uint[2] calldata pA,
         uint[2][2] calldata pB,
         uint[2] calldata pC,
+        uint256 userNonce,
         uint256 cHash
     ) external {
         uint256 pkHash = pkHashes[account];
         if (pkHash == 0) revert NotLocked(account);
+        if (usedUserNonces[userNonce]) revert UserNonceAlreadyUsed(userNonce);
         if (usedCHashes[cHash]) revert CHashAlreadyUsed(cHash);
 
-        (uint256 lo, uint256 hi) = _splitHash(cHash);
+        uint256 txHash = computeTxHash(userNonce);
+        (uint256 lo, uint256 hi) = _splitHash(txHash);
         uint[3] memory pubSignals = [pkHash, lo, hi];
 
         if (!verifier.verifyProof(pA, pB, pC, pubSignals)) {
             revert InvalidProof();
         }
 
+        usedUserNonces[userNonce] = true;
         usedCHashes[cHash] = true;
         pkHashes[account] = 0;
 
