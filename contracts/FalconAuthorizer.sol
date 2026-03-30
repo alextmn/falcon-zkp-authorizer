@@ -22,6 +22,7 @@ import "./FalconVerifier.sol";
  *   [0] pk_hash_in   – Poseidon hash of the Falcon public key
  *   [1] in_tx_hash1  – first  128 bits of the transaction hash
  *   [2] in_tx_hash2  – last   128 bits of the transaction hash
+ *   [3] c_hash       – 256-bit falcon'schallenge hash
  */
 contract FalconAuthorizer is IPQCAuthorizer {
 
@@ -31,7 +32,7 @@ contract FalconAuthorizer is IPQCAuthorizer {
     uint256[3] public upgradeGuardians;
 
     mapping(address => uint256) public pkHashes;
-    mapping(address => bool)    private _locked;
+    mapping(uint256 => bool)    public usedCHashes;
 
     error Unauthorized();
     error NotLocked(address account);
@@ -39,6 +40,7 @@ contract FalconAuthorizer is IPQCAuthorizer {
     error InvalidProof();
     error ZeroPkHash();
     error NotAGuardian(uint256 pkHash);
+    error CHashAlreadyUsed(uint256 cHash);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -63,41 +65,43 @@ contract FalconAuthorizer is IPQCAuthorizer {
      */
     function lock(address account, uint256 pkHash) external onlyOwner {
         if (pkHash == 0) revert ZeroPkHash();
-        if (_locked[account]) revert AlreadyLocked(account);
+        if (pkHashes[account] != 0) revert AlreadyLocked(account);
 
         pkHashes[account] = pkHash;
-        _locked[account]  = true;
 
         emit AuthorizationChanged(account, false);
     }
 
     /**
      * @notice Verify a Falcon-ZKP Groth16 proof and unlock `account`.
-     * @param account    The locked address to unlock.
-     * @param pA         Groth16 proof element A.
-     * @param pB         Groth16 proof element B.
-     * @param pC         Groth16 proof element C.
-     * @param txHash1    First 128 bits of the transaction hash (public signal).
-     * @param txHash2    Last  128 bits of the transaction hash (public signal).
+     * @param account  The locked address to unlock.
+     * @param pA       Groth16 proof element A.
+     * @param pB       Groth16 proof element B.
+     * @param pC       Groth16 proof element C.
+     * @param cHash    Unique 256-bit challenge hash; split into low/high
+     *                 128-bit halves for the circuit's public signals.
+     *                 Each cHash may only be used once (replay protection).
      */
     function unlock(
         address account,
         uint[2] calldata pA,
         uint[2][2] calldata pB,
         uint[2] calldata pC,
-        uint256 txHash1,
-        uint256 txHash2
+        uint256 cHash
     ) external {
-        if (!_locked[account]) revert NotLocked(account);
-
         uint256 pkHash = pkHashes[account];
-        uint[3] memory pubSignals = [pkHash, txHash1, txHash2];
+        if (pkHash == 0) revert NotLocked(account);
+        if (usedCHashes[cHash]) revert CHashAlreadyUsed(cHash);
+
+        (uint256 lo, uint256 hi) = _splitHash(cHash);
+        uint[3] memory pubSignals = [pkHash, lo, hi];
 
         if (!verifier.verifyProof(pA, pB, pC, pubSignals)) {
             revert InvalidProof();
         }
 
-        _locked[account] = false;
+        usedCHashes[cHash] = true;
+        pkHashes[account] = 0;
 
         emit AuthorizationChanged(account, true);
     }
@@ -106,8 +110,7 @@ contract FalconAuthorizer is IPQCAuthorizer {
 
     /// @inheritdoc IPQCAuthorizer
     function isAuthorized(address account) external view override returns (bool) {
-        if (!_hasRegistered(account)) return true;
-        return !_locked[account];
+        return pkHashes[account] == 0;
     }
 
     /// @inheritdoc IPQCAuthorizer
@@ -138,14 +141,15 @@ contract FalconAuthorizer is IPQCAuthorizer {
 
     // ─── Helpers ─────────────────────────────────────────────────────
 
-    function _hasRegistered(address account) private view returns (bool) {
-        return pkHashes[account] != 0;
-    }
-
     function _isGuardian(uint256 pkHash) private view returns (bool) {
         for (uint256 i = 0; i < 3; i++) {
             if (upgradeGuardians[i] == pkHash) return true;
         }
         return false;
+    }
+
+    function _splitHash(uint256 h) private pure returns (uint256 lo, uint256 hi) {
+        lo = h & type(uint128).max;
+        hi = h >> 128;
     }
 }
