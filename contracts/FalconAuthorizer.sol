@@ -143,28 +143,53 @@ contract FalconAuthorizer is IPQCAuthorizer {
             uint[2] memory pA,
             uint[2][2] memory pB,
             uint[2] memory pC,
-            uint[2] memory upgradeHashes
-        ) = abi.decode(proof, (uint[2], uint[2][2], uint[2], uint[2]));
-
-        uint256 pkHash = upgradeHashes[0];
-        uint256 cHash = upgradeHashes[1];
-        if (!_isGuardian(pkHash)) revert NotAGuardian(pkHash);
-        if (usedCHashes[cHash]) revert CHashAlreadyUsed(cHash);
-
-        uint256 userNonce = nonces[pkHash]++;
-        uint256 txHash = computeTxHash(userNonce);
-        (uint256 lo, uint256 hi) = _splitHash(txHash);
+            uint256 pkHash,
+            uint256 lo,
+            uint256 hi,
+            uint256 cHash
+        ) = _prepareUpgrade(proof);
 
         // todo: add cHash to the public signals
         if (!verifier.verifyProof(pA, pB, pC, [pkHash, hi, lo])) {
             revert InvalidProof();
         }
 
-        //emit UpgradeAuthorized(tokenContract, currentAuthorizer, newAuthorizer);
+        usedCHashes[cHash] = true;
+        emit UpgradeAuthorized(tokenContract, currentAuthorizer, newAuthorizer);
         return true;
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────
+
+    function _prepareUpgrade(
+        bytes calldata proof
+    )
+        private
+        returns (
+            uint[2] memory pA,
+            uint[2][2] memory pB,
+            uint[2] memory pC,
+            uint256 pkHash,
+            uint256 lo,
+            uint256 hi,
+            uint256 cHash
+        )
+    {
+        uint[2] memory upgradeHashes;
+        (pA, pB, pC, upgradeHashes) = abi.decode(
+            proof,
+            (uint[2], uint[2][2], uint[2], uint[2])
+        );
+
+        pkHash = upgradeHashes[0];
+        cHash = upgradeHashes[1];
+        if (!_isGuardian(pkHash)) revert NotAGuardian(pkHash);
+        if (usedCHashes[cHash]) revert CHashAlreadyUsed(cHash);
+
+        uint256 userNonce = nonces[pkHash]++;
+        uint256 txHash = computeTxHash(userNonce);
+        (lo, hi) = _splitHash(txHash);
+    }
 
     function _isGuardian(uint256 pkHash) private view returns (bool) {
         for (uint256 i = 0; i < 3; i++) {
